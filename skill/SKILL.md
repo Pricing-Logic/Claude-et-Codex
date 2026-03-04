@@ -1,6 +1,6 @@
 ---
 name: codex-plan-review
-version: 1.3.0
+version: 1.5.0
 description: "Cross-check implementation plans against Codex CLI to catch blind spots before coding. Use this skill BEFORE executing any implementation plan — when you've drafted a plan for a new feature, a refactor, a bug fix, or any multi-file change. Also use when the user says things like 'plan review', 'check with codex', 'second opinion', 'blind spot check', 'review my plan', or 'cross-check this'. The whole point is to get a second AI perspective on architectural decisions and catch things Claude Code might miss, then filter the feedback to only what actually matters."
 ---
 
@@ -28,6 +28,13 @@ You have a plan (or are about to finalize one). Before executing it, you're goin
 Before anything else, verify Codex is installed and meets the minimum version:
 
 ```bash
+# Ensure npm/node global bins are on PATH (Claude Code bash may not inherit full shell profile)
+for p in "$HOME/.local/bin" "$HOME/.npm-global/bin" "/usr/local/bin"; do
+  [ -d "$p" ] && case ":$PATH:" in *":$p:"*) ;; *) export PATH="$p:$PATH" ;; esac
+done
+for p in $(find "$HOME/.nvm/versions/node" -maxdepth 2 -name bin -type d 2>/dev/null); do
+  case ":$PATH:" in *":$p:"*) ;; *) export PATH="$p:$PATH" ;; esac
+done
 CODEX_RAW=$(codex -V 2>/dev/null) || { echo "ERROR: Codex CLI not installed. Install with: npm install -g @openai/codex"; exit 1; }
 CODEX_VERSION=$(echo "$CODEX_RAW" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 if [ -z "$CODEX_VERSION" ]; then echo "ERROR: Could not parse Codex version from: $CODEX_RAW"; exit 1; fi
@@ -57,15 +64,17 @@ Before calling Codex, assess the plan's complexity to determine which model and 
 
 | Complexity | Model | Reasoning | Flags to add to `codex exec` |
 |------------|-------|-----------|------------------------------|
-| LOW | spark (fast, cheap) | low | `-m gpt-5.3-codex-spark -c model_reasoning_effort="low"` |
-| MEDIUM | config default | config default | *(no override — uses ~/.codex/config.toml)* |
-| HIGH | non-spark (deeper) | high | `-m gpt-5.3-codex -c model_reasoning_effort="high"` |
+| LOW | spark | medium | `-m gpt-5.3-codex-spark -c model_reasoning_effort="medium"` |
+| MEDIUM | codex-5.3 | high | `-m gpt-5.3-codex -c model_reasoning_effort="high"` |
+| HIGH | codex-5.3 | xhigh | `-m gpt-5.3-codex -c model_reasoning_effort="xhigh"` |
 
-Rationale: Spark models are optimized for speed and code tasks — perfect for most reviews. Non-spark models reason more carefully about architecture and edge cases, which matters for high-risk plans. The skill defaults to whatever the user has configured in `~/.codex/config.toml` and only overrides when the complexity warrants it.
+Rationale: Spark handles simple checklist-style reviews well. Codex-5.3 reasons more carefully about architecture and edge cases — use it for anything beyond trivial changes. Always be explicit about model selection; never defer to user config defaults for deterministic review quality.
+
+**Auto-escalation triggers:** If a LOW plan touches any of these, auto-upgrade to MEDIUM routing: auth/permissions, schema/data contracts, migrations, background jobs, concurrency, external API contracts, or unclear ownership boundaries.
 
 **Note:** Model names evolve. If `gpt-5.3-codex-spark` or `gpt-5.3-codex` are no longer available, check `codex` docs for current model IDs and substitute accordingly.
 
-If the user explicitly requests a model (e.g., "use o3", "use spark"), always respect that over the auto-selection.
+If the user explicitly requests a model or reasoning effort (e.g., "use o3", "use spark", "xhigh thinking", "high reasoning"), always respect that over the auto-selection. Valid reasoning effort values: `low`, `medium`, `high`, `xhigh`.
 
 ### Step 2: Prepare the Plan Document
 
@@ -106,11 +115,19 @@ If a `writing-plans` skill is available, use it to produce the plan.
 These steps MUST run as a single bash command because Claude Code runs each command in a separate shell — variables like `$PLAN_FILE` would be lost between steps. Run the entire block below as one command.
 
 Choose the model flags based on your Step 1 assessment:
-- **MEDIUM**: no extra flags (uses config default)
-- **LOW**: add `-m gpt-5.3-codex-spark -c model_reasoning_effort="low"` to the `codex exec` line
-- **HIGH**: add `-m gpt-5.3-codex -c model_reasoning_effort="high"` to the `codex exec` line
+- **LOW**: add `-m gpt-5.3-codex-spark -c model_reasoning_effort="medium"` to the `codex exec` line
+- **MEDIUM**: add `-m gpt-5.3-codex -c model_reasoning_effort="high"` to the `codex exec` line
+- **HIGH**: add `-m gpt-5.3-codex -c model_reasoning_effort="xhigh"` to the `codex exec` line
 
 ```bash
+# --- Ensure npm/node global bins are on PATH ---
+for p in "$HOME/.local/bin" "$HOME/.npm-global/bin" "/usr/local/bin"; do
+  [ -d "$p" ] && case ":$PATH:" in *":$p:"*) ;; *) export PATH="$p:$PATH" ;; esac
+done
+for p in $(find "$HOME/.nvm/versions/node" -maxdepth 2 -name bin -type d 2>/dev/null); do
+  case ":$PATH:" in *":$p:"*) ;; *) export PATH="$p:$PATH" ;; esac
+done
+
 # --- Create unique temp files (mktemp without extension, then rename for .md) ---
 PLAN_FILE=$(mktemp /tmp/codex-plan-XXXXXX) && mv "$PLAN_FILE" "${PLAN_FILE}.md" && PLAN_FILE="${PLAN_FILE}.md"
 REQUEST_FILE=$(mktemp /tmp/codex-request-XXXXXX) && mv "$REQUEST_FILE" "${REQUEST_FILE}.md" && REQUEST_FILE="${REQUEST_FILE}.md"
@@ -157,10 +174,12 @@ The plan to review follows below.
 INSTRUCTIONS_EOF
 cat "$PLAN_FILE" >> "$REQUEST_FILE"
 
-# --- Call Codex (MEDIUM complexity shown — add model flags for LOW/HIGH) ---
+# --- Call Codex (add model flags from Step 1 assessment) ---
 cat "$REQUEST_FILE" | codex exec \
   --full-auto \
   --ephemeral \
+  -m gpt-5.3-codex \
+  -c model_reasoning_effort="high" \
   -C "$(pwd)" \
   -o "$OUTPUT_FILE" \
   -
@@ -183,7 +202,7 @@ Set the Bash tool timeout to `300000` (5 minutes) when running this command. If 
 - `-o` (`--output-last-message`) captures Codex's final response to a file for reliable reading
 - The combined request is piped as a single stdin stream via `-` — instructions and plan in one document, avoiding the broken dual-stdin pattern of mixing pipes with heredocs
 - The prompt explicitly tells Codex to filter itself — this is the first layer of noise reduction. Step 6 is the safety net because Codex doesn't always follow instructions perfectly
-- The skill uses whatever model is configured in `~/.codex/config.toml` for MEDIUM, only overriding for LOW or HIGH complexity plans
+- The skill always explicitly selects a model — never defers to user config defaults — for deterministic review quality
 
 **If Codex fails with an auth error:** Tell the user to run `codex login` or set `OPENAI_API_KEY`, then retry.
 
