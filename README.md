@@ -77,11 +77,13 @@ The skill reads your plan and auto-selects the right Codex model:
 
 | Plan Complexity | Model | Reasoning | When |
 |-----------------|-------|-----------|------|
-| LOW | Spark | Low | UI changes, config, styling (1-3 files) |
-| MEDIUM | Config default | Config default | New endpoints, logic changes (4-8 files) |
-| HIGH | Non-Spark | High | Data models, auth, migrations, cross-system (9+ files) |
+| LOW | Spark | Medium | UI changes, config, styling (1-3 files) |
+| MEDIUM | Codex-5.3 | High | New endpoints, logic changes (4-8 files) |
+| HIGH | Codex-5.3 | XHigh | Data models, auth, migrations, cross-system (9+ files) |
 
-You never need to pick a model — but you can override with "use o3" or "use spark" if you want.
+The skill always explicitly selects a model for deterministic review quality — it never defers to user config defaults. If a LOW-complexity plan touches auth, migrations, concurrency, or other sensitive areas, it auto-escalates to MEDIUM routing.
+
+You never need to pick a model — but you can override with "use o3", "use spark", or specify reasoning effort like "xhigh thinking".
 
 See [docs/model-selection.md](docs/model-selection.md) for the full guide on Spark vs Non-Spark and reasoning levels.
 
@@ -155,6 +157,7 @@ This skill went through 4 versions in a single session, with Codex reviewing eac
 - **v1.1.0**: Codex caught that `timeout` doesn't exist on macOS
 - **v1.2.0**: Codex caught a critical stdin bug — piping a file AND using a heredoc on the same command silently drops the plan. Reviews were returning "clean" because Codex never saw the plan.
 - **v1.3.0**: Codex caught that macOS `mktemp` with a `.md` suffix doesn't randomize the filename, and that Claude Code's separate shell invocations break `trap` cleanup and variable persistence.
+- **v1.5.0**: Fixed zsh glob bug with nvm path detection, added explicit PATH setup blocks, upgraded model routing (always explicit, never defers to config defaults), and added auto-escalation triggers for sensitive plan areas.
 
 Full story in [docs/how-it-was-built.md](docs/how-it-was-built.md).
 
