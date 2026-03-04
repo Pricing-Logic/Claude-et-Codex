@@ -14,7 +14,7 @@ You have a plan (or are about to finalize one). Before executing it, you're goin
 
 **Privacy note:** This skill gives Codex read-only access to project files in the working directory via `-C` and `--sandbox read-only`. For sensitive or proprietary repos, confirm with the user before proceeding.
 
-**Platform:** macOS and Linux. Temp files use `/tmp/`. Windows users need WSL or equivalent.
+**Platform:** macOS, Linux, and Windows (including Git Bash on Windows 11). Temp files are written to a project-relative directory — never `/tmp/` — so all tools resolve the same path.
 
 ## When This Triggers
 
@@ -83,7 +83,9 @@ If the user explicitly requests a model or reasoning effort (e.g., "use o3", "us
 
 ### Step 2: Prepare the Plan Document
 
-Assemble a clear plan document. If you haven't already written one, draft one now using this minimum template:
+Assemble a clear plan document. If you haven't already written one, draft one now using this minimum template.
+
+**Windows note:** Do NOT use the Write tool to write the plan to `/tmp/` — on Windows, the Write tool, Node.js, and bash all resolve `/tmp` to different physical locations. The plan content must be written inline inside the bash heredoc in Step 3 (shown below). Never write temp files to `/tmp/` paths when running on Windows.
 
 ```markdown
 ## Objective
@@ -145,10 +147,13 @@ for p in $(find "$HOME/.nvm/versions/node" -maxdepth 2 -name bin -type d 2>/dev/
   case ":$PATH:" in *":$p:"*) ;; *) export PATH="$p:$PATH" ;; esac
 done
 
-# --- Create unique temp files (mktemp without extension, then rename for .md) ---
-PLAN_FILE=$(mktemp /tmp/codex-plan-XXXXXX) && mv "$PLAN_FILE" "${PLAN_FILE}.md" && PLAN_FILE="${PLAN_FILE}.md"
-REQUEST_FILE=$(mktemp /tmp/codex-request-XXXXXX) && mv "$REQUEST_FILE" "${REQUEST_FILE}.md" && REQUEST_FILE="${REQUEST_FILE}.md"
-OUTPUT_FILE=$(mktemp /tmp/codex-output-XXXXXX) && mv "$OUTPUT_FILE" "${OUTPUT_FILE}.md" && OUTPUT_FILE="${OUTPUT_FILE}.md"
+# --- Create unique temp directory inside the project (works on macOS, Linux, Windows/Git Bash) ---
+# Using $(pwd) avoids /tmp path mismatches between Write tool, Node.js, and bash on Windows.
+WORK_DIR="$(pwd)/.codex-tmp-$$"
+mkdir -p "$WORK_DIR" || { echo "ERROR: Cannot create temp dir $WORK_DIR (read-only or locked directory?)"; exit 1; }
+PLAN_FILE="$WORK_DIR/plan.md"
+REQUEST_FILE="$WORK_DIR/request.md"
+OUTPUT_FILE="$WORK_DIR/output.md"
 
 # --- Write the plan ---
 cat > "$PLAN_FILE" << 'PLAN_EOF'
@@ -233,7 +238,7 @@ INSTRUCTIONS_EOF
 cat "$PLAN_FILE" >> "$REQUEST_FILE"
 
 # --- Build single-shot fallback prompt (strips multi-agent instructions) ---
-FALLBACK_FILE=$(mktemp /tmp/codex-fallback-XXXXXX) && mv "$FALLBACK_FILE" "${FALLBACK_FILE}.md" && FALLBACK_FILE="${FALLBACK_FILE}.md"
+FALLBACK_FILE="$WORK_DIR/fallback.md"
 cat > "$FALLBACK_FILE" << 'FALLBACK_INSTRUCTIONS_EOF'
 You are reviewing an implementation plan created by another AI assistant (Claude Code). Your job is to find CRITICAL blind spots — things that will cause bugs, data loss, race conditions, breaking changes, or architectural problems.
 
@@ -336,7 +341,7 @@ if [ $CODEX_EXIT -ne 0 ]; then
     echo "  - Repo trust: run 'codex' in this directory once to trust it"
     echo "  - Model unavailable: check 'codex' docs for current model IDs"
     echo "  - Not a git repo: try adding --skip-git-repo-check"
-    rm -f "$PLAN_FILE" "$REQUEST_FILE" "$FALLBACK_FILE" "$OUTPUT_FILE"
+    rm -rf "$WORK_DIR"
     exit 1
   fi
   echo "NOTE: Review completed in single-shot fallback mode (multi_agent was unavailable)."
@@ -348,10 +353,10 @@ cat "$OUTPUT_FILE"
 echo "=== END OUTPUT ==="
 
 # --- Cleanup ---
-rm -f "$PLAN_FILE" "$REQUEST_FILE" "$FALLBACK_FILE" "$OUTPUT_FILE"
+rm -rf "$WORK_DIR"
 ```
 
-Set the Bash tool timeout to `600000` (10 minutes) when running this command — multi-agent reviews take longer than single-shot. If it times out, clean up orphaned files with: `rm -f /tmp/codex-plan-*.md /tmp/codex-request-*.md /tmp/codex-output-*.md`
+Set the Bash tool timeout to `600000` (10 minutes) when running this command — multi-agent reviews take longer than single-shot. If it times out, clean up orphaned dirs with: `rm -rf "$(pwd)"/.codex-tmp-*`
 
 **Important notes on the Codex call:**
 - `--enable multi_agent` activates Codex's sub-agent orchestration (spawns parallel worker threads)
@@ -451,7 +456,7 @@ If the verdict was APPROVE or APPROVE_WITH_CHANGES with no critical findings:
 **Codex takes too long:**
 - The Bash tool timeout (600000ms / 10 minutes) will kill the process — multi-agent reviews need more time than single-shot
 - Individual sub-agents are bounded by `job_max_runtime_seconds` (configurable per complexity tier)
-- If it times out, report it and clean up: `rm -f /tmp/codex-plan-*.md /tmp/codex-request-*.md /tmp/codex-output-*.md`
+- If it times out, report it and clean up: `rm -rf "$(pwd)"/.codex-tmp-*`
 
 **Codex returns only non-critical noise:**
 - This is fine and expected. Report: "Codex multi-agent review complete — no critical issues found. All suggestions were non-critical (security hardening, additional validation) and filtered out."

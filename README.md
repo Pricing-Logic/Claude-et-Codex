@@ -38,7 +38,7 @@ You get: APPROVE / APPROVE_WITH_CHANGES / BLOCK verdict
 - [Claude Code](https://claude.ai/claude-code) (Anthropic CLI)
 - [Codex CLI](https://github.com/openai/codex) >= 0.104.0
 - OpenAI API key configured (`codex login` or `OPENAI_API_KEY`)
-- macOS or Linux (Windows via WSL)
+- macOS, Linux, or Windows (Git Bash on Windows 11)
 - `multi_agent` feature enabled in Codex (recommended — see [Configuration](#configuration))
 
 ### Install

@@ -3,7 +3,7 @@
 > **Version:** 2.0.0
 > **Purpose:** Cross-check implementation plans against OpenAI's Codex CLI using multi-agent review to catch blind spots before coding
 > **Platform:** Claude Code (Anthropic CLI) orchestrating Codex CLI (OpenAI) with parallel sub-agents
-> **Requirements:** Codex CLI >= 0.104.0, Claude Code, macOS or Linux
+> **Requirements:** Codex CLI >= 0.104.0, Claude Code, macOS/Linux/Windows (Git Bash)
 
 ---
 
@@ -210,7 +210,7 @@ Model names change as OpenAI releases new versions. The current names (`gpt-5.3-
 - **Claude Code** (Anthropic CLI)
 - **Codex CLI** >= 0.104.0 (`npm install -g @openai/codex`)
 - An **OpenAI API key** configured for Codex (`codex login` or set `OPENAI_API_KEY`)
-- **macOS or Linux** (uses `/tmp/` for temp files; Windows users need WSL)
+- **macOS, Linux, or Windows** (Git Bash on Windows 11; temp files use project-relative dirs, no WSL needed)
 
 ### Setup
 
@@ -267,6 +267,13 @@ The skill overrides the model and reasoning effort per-review based on plan comp
 ---
 
 ## Changelog
+
+### v2.0.1 (2026-03-04)
+
+**Fixed:**
+- **Windows /tmp path mismatch** — On Windows (Git Bash), `/tmp` resolves to different physical locations depending on the tool (Write tool, Node.js, bash). Replaced all `/tmp/` temp file usage with a project-relative directory (`$(pwd)/.codex-tmp-$$`), which all tools resolve consistently. Native Git Bash on Windows 11 is now fully supported — no WSL required.
+- **mkdir fail-fast** — Added explicit error check after `mkdir -p "$WORK_DIR"` so failures in read-only or locked directories fail immediately with a clear error rather than silently continuing with missing artifacts.
+- **Stale timeout cleanup hint** — The inline note after the bash block still referenced `/tmp/codex-*` cleanup; updated to `rm -rf "$(pwd)"/.codex-tmp-*`.
 
 ### v2.0.0 (2026-03-04)
 

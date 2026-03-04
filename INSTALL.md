@@ -7,7 +7,7 @@
 | Claude Code | `claude --version` | [claude.ai/claude-code](https://claude.ai/claude-code) |
 | Codex CLI >= 0.100.0 | `codex -V` | `npm install -g @openai/codex` |
 | OpenAI API key | `codex login` | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
-| macOS or Linux | `uname` | Windows users: use WSL |
+| macOS, Linux, or Windows | `uname` | Windows: use Git Bash (WSL also works) |
 
 ## Install the Skill
 
