@@ -1,16 +1,18 @@
 ---
 name: codex-plan-review
-version: 1.5.0
-description: "Cross-check implementation plans against Codex CLI to catch blind spots before coding. Use this skill BEFORE executing any implementation plan — when you've drafted a plan for a new feature, a refactor, a bug fix, or any multi-file change. Also use when the user says things like 'plan review', 'check with codex', 'second opinion', 'blind spot check', 'review my plan', or 'cross-check this'. The whole point is to get a second AI perspective on architectural decisions and catch things Claude Code might miss, then filter the feedback to only what actually matters."
+version: 2.0.0
+description: "Cross-check implementation plans against Codex CLI using multi-agent review to catch blind spots before coding. Use this skill BEFORE executing any implementation plan — when you've drafted a plan for a new feature, a refactor, a bug fix, or any multi-file change. Also use when the user says things like 'plan review', 'check with codex', 'second opinion', 'blind spot check', 'review my plan', or 'cross-check this'. The whole point is to get a second AI perspective on architectural decisions and catch things Claude Code might miss, then filter the feedback to only what actually matters. v2.0 uses Codex's multi_agent feature to spawn parallel sub-agents for deeper code-reality validation and architecture review."
 ---
 
-# Codex Plan Review — Blind Spot Detection
+# Codex Plan Review — Multi-Agent Blind Spot Detection
 
 You have a plan (or are about to finalize one). Before executing it, you're going to get a second opinion from OpenAI's Codex CLI to catch blind spots. Codex thinks differently than you do — it'll spot things you miss. But it also tends to over-engineer security and add unnecessary complexity. Your job is to be a smart filter: extract the critical insights, discard the noise.
 
-**Requirements:** Codex CLI >= 0.100.0 (`codex -V` to check). Install with `npm install -g @openai/codex` if missing.
+**v2.0** uses Codex's `multi_agent` feature to spawn parallel sub-agents — an **explorer** that reads actual repo files to validate feasibility, and an **architecture reviewer** that evaluates design, sequencing, and risk — then synthesizes both into a single verdict. This produces significantly deeper reviews than single-shot mode.
 
-**Privacy note:** This skill gives Codex read access to project files in the working directory via `-C`. For sensitive or proprietary repos, confirm with the user before proceeding.
+**Requirements:** Codex CLI >= 0.104.0 (`codex -V` to check). Install with `npm install -g @openai/codex` if missing. The `multi_agent` feature must be available (experimental as of March 2026).
+
+**Privacy note:** This skill gives Codex read-only access to project files in the working directory via `-C` and `--sandbox read-only`. For sensitive or proprietary repos, confirm with the user before proceeding.
 
 **Platform:** macOS and Linux. Temp files use `/tmp/`. Windows users need WSL or equivalent.
 
@@ -25,7 +27,7 @@ You have a plan (or are about to finalize one). Before executing it, you're goin
 
 ### Step 0: Preflight Check
 
-Before anything else, verify Codex is installed and meets the minimum version:
+Before anything else, verify Codex is installed, meets the minimum version, and has multi_agent available:
 
 ```bash
 # Ensure npm/node global bins are on PATH (Claude Code bash may not inherit full shell profile)
@@ -39,17 +41,20 @@ CODEX_RAW=$(codex -V 2>/dev/null) || { echo "ERROR: Codex CLI not installed. Ins
 CODEX_VERSION=$(echo "$CODEX_RAW" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 if [ -z "$CODEX_VERSION" ]; then echo "ERROR: Could not parse Codex version from: $CODEX_RAW"; exit 1; fi
 echo "Found: codex-cli $CODEX_VERSION"
-MIN_VERSION="0.100.0"
+MIN_VERSION="0.104.0"
 if [ "$(printf '%s\n' "$MIN_VERSION" "$CODEX_VERSION" | sort -V | head -n1)" != "$MIN_VERSION" ]; then
-  echo "WARNING: Codex CLI $CODEX_VERSION is below minimum $MIN_VERSION — some flags may not work."
+  echo "WARNING: Codex CLI $CODEX_VERSION is below minimum $MIN_VERSION — multi_agent may not be available. Will attempt single-shot fallback."
 fi
+# Check if multi_agent feature is available
+MULTI_AGENT_STATUS=$(codex features list 2>/dev/null | grep -E "^multi_agent" | awk '{print $NF}')
+echo "multi_agent feature: ${MULTI_AGENT_STATUS:-unknown}"
 ```
 
 If `codex exec` later fails with an authentication error, tell the user to run `codex login` or set the `OPENAI_API_KEY` environment variable.
 
-### Step 1: Assess Complexity & Select Model
+### Step 1: Assess Complexity & Select Configuration
 
-Before calling Codex, assess the plan's complexity to determine which model and reasoning effort to use. This should happen automatically — don't ask the user unless they've expressed a preference.
+Before calling Codex, assess the plan's complexity to determine model, reasoning effort, and multi-agent concurrency. This should happen automatically — don't ask the user unless they've expressed a preference.
 
 **Complexity signals:**
 
@@ -60,15 +65,15 @@ Before calling Codex, assess the plan's complexity to determine which model and 
 | Risk | Reversible, no data impact | Could break features | Data loss, security, breaking changes |
 | Dependencies | Self-contained | Touches shared code | Cross-package, external APIs |
 
-**Model selection based on complexity:**
+**Model and multi-agent configuration by complexity:**
 
-| Complexity | Model | Reasoning | Flags to add to `codex exec` |
-|------------|-------|-----------|------------------------------|
-| LOW | spark | medium | `-m gpt-5.3-codex-spark -c model_reasoning_effort="medium"` |
-| MEDIUM | codex-5.3 | high | `-m gpt-5.3-codex -c model_reasoning_effort="high"` |
-| HIGH | codex-5.3 | xhigh | `-m gpt-5.3-codex -c model_reasoning_effort="xhigh"` |
+| Complexity | Model | Reasoning | Max Threads | Max Depth | Timeout (s) |
+|------------|-------|-----------|-------------|-----------|-------------|
+| LOW | spark | medium | 2 | 1 | 600 |
+| MEDIUM | codex-5.3 | high | 3 | 1 | 900 |
+| HIGH | codex-5.3 | xhigh | 4 | 1 | 1200 |
 
-Rationale: Spark handles simple checklist-style reviews well. Codex-5.3 reasons more carefully about architecture and edge cases — use it for anything beyond trivial changes. Always be explicit about model selection; never defer to user config defaults for deterministic review quality.
+Rationale: Spark handles simple checklist-style reviews well. Codex-5.3 reasons more carefully about architecture and edge cases — use it for anything beyond trivial changes. `max_depth=1` prevents recursive sub-agent spawning (a safety guard). Thread count scales with complexity because higher-complexity plans benefit from more parallel exploration.
 
 **Auto-escalation triggers:** If a LOW plan touches any of these, auto-upgrade to MEDIUM routing: auth/permissions, schema/data contracts, migrations, background jobs, concurrency, external API contracts, or unclear ownership boundaries.
 
@@ -110,14 +115,26 @@ The "Key Files to Examine" and "Constraints / Non-Goals" sections are important 
 
 If a `writing-plans` skill is available, use it to produce the plan.
 
-### Steps 3-5: Build Request, Call Codex, Read Output
+### Steps 3-5: Build Request, Call Codex (Multi-Agent), Read Output
 
 These steps MUST run as a single bash command because Claude Code runs each command in a separate shell — variables like `$PLAN_FILE` would be lost between steps. Run the entire block below as one command.
 
-Choose the model flags based on your Step 1 assessment:
-- **LOW**: add `-m gpt-5.3-codex-spark -c model_reasoning_effort="medium"` to the `codex exec` line
-- **MEDIUM**: add `-m gpt-5.3-codex -c model_reasoning_effort="high"` to the `codex exec` line
-- **HIGH**: add `-m gpt-5.3-codex -c model_reasoning_effort="xhigh"` to the `codex exec` line
+Choose the configuration based on your Step 1 assessment:
+
+**LOW complexity:**
+```
+-m gpt-5.3-codex-spark -c model_reasoning_effort="medium" -c agents.max_threads=2 -c agents.max_depth=1 -c agents.job_max_runtime_seconds=600
+```
+
+**MEDIUM complexity:**
+```
+-m gpt-5.3-codex -c model_reasoning_effort="high" -c agents.max_threads=3 -c agents.max_depth=1 -c agents.job_max_runtime_seconds=900
+```
+
+**HIGH complexity:**
+```
+-m gpt-5.3-codex -c model_reasoning_effort="xhigh" -c agents.max_threads=4 -c agents.max_depth=1 -c agents.job_max_runtime_seconds=1200
+```
 
 ```bash
 # --- Ensure npm/node global bins are on PATH ---
@@ -138,8 +155,86 @@ cat > "$PLAN_FILE" << 'PLAN_EOF'
 [Your assembled plan goes here]
 PLAN_EOF
 
-# --- Build combined request (instructions + plan in one file) ---
+# --- Build combined request (multi-agent instructions + plan in one file) ---
 cat > "$REQUEST_FILE" << 'INSTRUCTIONS_EOF'
+You are reviewing an implementation plan created by another AI assistant (Claude Code). Your job is to find CRITICAL blind spots — things that will cause bugs, data loss, race conditions, breaking changes, or architectural problems.
+
+You have access to the project files in this directory.
+
+## Mandatory Multi-Agent Workflow
+
+You MUST follow this workflow — do not skip to a single-pass review:
+
+1) Spawn an `explorer` sub-agent for code-reality validation.
+   - Read all files listed under "Key Files to Examine" in the plan.
+   - Read all files listed under "Files to Modify" in the plan.
+   - Check imports, dependencies, and integration points in each file.
+   - Output ONLY: concrete mismatches between the plan and actual code, missing dependencies, broken imports, incorrect API assumptions, and file-level risks. Include exact file paths and line numbers.
+
+2) Spawn a second sub-agent for architecture and risk review.
+   - Evaluate system boundaries, component coupling, and sequencing.
+   - Check for migration/rollback risks, data consistency issues, and race conditions.
+   - Verify the plan's sequence won't create intermediate broken states.
+   - Check for missing env variables, config changes, or deployment steps.
+   - Output ONLY: architectural risks, missing design decisions, sequencing problems, and safer alternatives. Be specific — cite plan sections.
+
+3) Wait for both agents to complete, then synthesize their findings.
+
+## Review Standards (apply to all agents)
+
+DO NOT suggest:
+- Minor style improvements
+- Additional logging or monitoring
+- Extra validation that isn't strictly necessary
+- Security hardening beyond what the context requires
+- Performance optimizations unless there's a clear bottleneck
+- Additional abstractions or design patterns
+- Type annotations or docstrings
+- Error handling for impossible scenarios
+- Anything listed under "Constraints / Non-Goals" in the plan
+
+ONLY flag issues that would:
+1. Cause runtime errors or crashes
+2. Break existing functionality (check the actual code to verify)
+3. Create data inconsistency or loss
+4. Miss a required integration point (check imports, routes, configs)
+5. Have incorrect assumptions about APIs, schemas, or data flow
+6. Create race conditions or deadlocks
+7. Violate constraints the plan doesn't account for
+8. Miss a migration, env variable, or deployment step
+
+## Output Format
+
+Return EXACTLY this structure:
+
+**Verdict:** APPROVE | APPROVE_WITH_CHANGES | BLOCK
+
+**Critical Findings** (ordered by severity):
+1. [Finding] — [Why it matters] — Evidence: `file:line`
+
+**Medium Risks** (worth noting but not blocking):
+- [Risk] — [Context]
+
+**Missing Steps** (required additions to the plan):
+- [Step] — [Why it's needed]
+
+**Assumptions / Open Questions**:
+- [Assumption that could not be verified] — [What to check]
+
+Limit Critical Findings to the TOP 5 most severe. If nothing critical was found, say so explicitly.
+
+---
+
+The plan to review follows below.
+
+---
+
+INSTRUCTIONS_EOF
+cat "$PLAN_FILE" >> "$REQUEST_FILE"
+
+# --- Build single-shot fallback prompt (strips multi-agent instructions) ---
+FALLBACK_FILE=$(mktemp /tmp/codex-fallback-XXXXXX) && mv "$FALLBACK_FILE" "${FALLBACK_FILE}.md" && FALLBACK_FILE="${FALLBACK_FILE}.md"
+cat > "$FALLBACK_FILE" << 'FALLBACK_INSTRUCTIONS_EOF'
 You are reviewing an implementation plan created by another AI assistant (Claude Code). Your job is to find CRITICAL blind spots — things that will cause bugs, data loss, race conditions, breaking changes, or architectural problems.
 
 You have access to the project files in this directory. Prioritize reading files listed under "Key Files to Examine" in the plan, then check other referenced files as needed.
@@ -165,24 +260,87 @@ ONLY flag issues that would:
 7. Violate constraints the plan doesn't account for
 8. Miss a migration, env variable, or deployment step
 
-Limit your response to the TOP 5 most critical findings. For each finding, cite the specific file and line number as evidence.
+Return EXACTLY this structure:
+
+**Verdict:** APPROVE | APPROVE_WITH_CHANGES | BLOCK
+
+**Critical Findings** (ordered by severity):
+1. [Finding] — [Why it matters] — Evidence: `file:line`
+
+**Medium Risks** (worth noting but not blocking):
+- [Risk] — [Context]
+
+**Missing Steps** (required additions to the plan):
+- [Step] — [Why it's needed]
+
+**Assumptions / Open Questions**:
+- [Assumption that could not be verified] — [What to check]
+
+Limit Critical Findings to the TOP 5 most severe. If nothing critical was found, say so explicitly.
+
+---
 
 The plan to review follows below.
 
 ---
 
-INSTRUCTIONS_EOF
-cat "$PLAN_FILE" >> "$REQUEST_FILE"
+FALLBACK_INSTRUCTIONS_EOF
+cat "$PLAN_FILE" >> "$FALLBACK_FILE"
 
-# --- Call Codex (add model flags from Step 1 assessment) ---
+# --- Call Codex with multi-agent enabled (adjust model flags per Step 1) ---
+# NOTE: Do NOT use --full-auto — it overrides --sandbox read-only with workspace-write.
+# In exec mode, approval defaults to 'never', so --full-auto is unnecessary.
 cat "$REQUEST_FILE" | codex exec \
-  --full-auto \
   --ephemeral \
+  --enable multi_agent \
+  --sandbox read-only \
   -m gpt-5.3-codex \
   -c model_reasoning_effort="high" \
+  -c agents.max_threads=3 \
+  -c agents.max_depth=1 \
+  -c agents.job_max_runtime_seconds=900 \
   -C "$(pwd)" \
   -o "$OUTPUT_FILE" \
   -
+
+CODEX_EXIT=$?
+
+# --- Check for empty output (silent false-positive guard) ---
+if [ $CODEX_EXIT -eq 0 ] && [ ! -s "$OUTPUT_FILE" ]; then
+  echo "WARNING: Codex exited successfully but produced no output. Treating as failure."
+  CODEX_EXIT=1
+fi
+
+# --- Check for multi-agent failure and fallback to single-shot ---
+if [ $CODEX_EXIT -ne 0 ]; then
+  echo "WARNING: Multi-agent review failed (exit code $CODEX_EXIT). Falling back to single-shot mode..."
+  # Use the fallback prompt that doesn't reference sub-agent spawning
+  cat "$FALLBACK_FILE" | codex exec \
+    --full-auto \
+    --ephemeral \
+    --sandbox read-only \
+    -m gpt-5.3-codex \
+    -c model_reasoning_effort="high" \
+    -C "$(pwd)" \
+    -o "$OUTPUT_FILE" \
+    -
+  CODEX_EXIT=$?
+  if [ $CODEX_EXIT -eq 0 ] && [ ! -s "$OUTPUT_FILE" ]; then
+    echo "WARNING: Codex exited successfully but produced no output. Treating as failure."
+    CODEX_EXIT=1
+  fi
+  if [ $CODEX_EXIT -ne 0 ]; then
+    echo "ERROR: Codex review failed in both multi-agent and single-shot mode (exit code $CODEX_EXIT)."
+    echo "Possible causes:"
+    echo "  - Auth: run 'codex login' or set OPENAI_API_KEY"
+    echo "  - Repo trust: run 'codex' in this directory once to trust it"
+    echo "  - Model unavailable: check 'codex' docs for current model IDs"
+    echo "  - Not a git repo: try adding --skip-git-repo-check"
+    rm -f "$PLAN_FILE" "$REQUEST_FILE" "$FALLBACK_FILE" "$OUTPUT_FILE"
+    exit 1
+  fi
+  echo "NOTE: Review completed in single-shot fallback mode (multi_agent was unavailable)."
+fi
 
 # --- Read and display the output ---
 echo "=== CODEX REVIEW OUTPUT ==="
@@ -190,30 +348,36 @@ cat "$OUTPUT_FILE"
 echo "=== END OUTPUT ==="
 
 # --- Cleanup ---
-rm -f "$PLAN_FILE" "$REQUEST_FILE" "$OUTPUT_FILE"
+rm -f "$PLAN_FILE" "$REQUEST_FILE" "$FALLBACK_FILE" "$OUTPUT_FILE"
 ```
 
-Set the Bash tool timeout to `300000` (5 minutes) when running this command. If it times out, clean up orphaned files with: `rm -f /tmp/codex-plan-*.md /tmp/codex-request-*.md /tmp/codex-output-*.md`
+Set the Bash tool timeout to `600000` (10 minutes) when running this command — multi-agent reviews take longer than single-shot. If it times out, clean up orphaned files with: `rm -f /tmp/codex-plan-*.md /tmp/codex-request-*.md /tmp/codex-output-*.md`
 
 **Important notes on the Codex call:**
-- `--full-auto` prevents interactive prompts blocking the terminal
+- `--enable multi_agent` activates Codex's sub-agent orchestration (spawns parallel worker threads)
+- `--sandbox read-only` restricts Codex to reading files only — appropriate for a review task. Use `--sandbox workspace-write` only if you need Codex to run build/test commands
+- Do NOT use `--full-auto` — it silently overrides `--sandbox read-only` with `workspace-write`. In exec mode, approval is already set to `never` by default, so `--full-auto` is unnecessary
 - `--ephemeral` avoids polluting session history with review artifacts
 - `-C "$(pwd)"` gives Codex access to the project files so it can verify assumptions against actual code
-- `-o` (`--output-last-message`) captures Codex's final response to a file for reliable reading
-- The combined request is piped as a single stdin stream via `-` — instructions and plan in one document, avoiding the broken dual-stdin pattern of mixing pipes with heredocs
-- The prompt explicitly tells Codex to filter itself — this is the first layer of noise reduction. Step 6 is the safety net because Codex doesn't always follow instructions perfectly
+- `-o` (`--output-last-message`) captures Codex's final synthesized response to a file for reliable reading
+- `-c agents.max_threads=N` controls how many sub-agents can run in parallel
+- `-c agents.max_depth=1` prevents sub-agents from spawning their own sub-agents (safety guard)
+- `-c agents.job_max_runtime_seconds=N` sets per-worker timeout to prevent runaway agents
+- The prompt explicitly instructs Codex to spawn two sub-agents — this is the first layer of control. Codex's multi_agent orchestrator handles the actual spawning, waiting, and result merging
+- The fallback logic catches cases where multi_agent is unavailable (older Codex versions, feature disabled, or runtime errors) and retries as a standard single-shot review
 - The skill always explicitly selects a model — never defers to user config defaults — for deterministic review quality
 
 **If Codex fails with an auth error:** Tell the user to run `codex login` or set `OPENAI_API_KEY`, then retry.
 
 ### Step 6: Filter — The Safety Net
 
-Codex has a well-known tendency to:
+Even with multi-agent review, Codex has a well-known tendency to:
 
 - **Over-securitize**: Adding auth checks, input validation, and error handling everywhere, even for internal functions that receive trusted data. If the plan is for an internal tool or a prototype, most security suggestions are noise.
 - **Over-abstract**: Suggesting interfaces, factories, and extra layers for things that don't need them yet. One concrete implementation beats a premature abstraction.
 - **Scope creep**: Suggesting adjacent features, "while you're at it" additions, or "best practice" extras that expand the scope beyond what was asked.
 - **Framework orthodoxy**: Insisting on patterns that a framework supports but the project doesn't use. If the codebase has its own conventions, those win.
+- **Sub-agent echo**: With multi-agent mode, both sub-agents may flag the same issue from different angles. Deduplicate findings — present each issue once with the strongest evidence.
 
 **Your filter criteria — only keep findings that are:**
 
@@ -226,6 +390,7 @@ Codex has a well-known tendency to:
 | Wrong assumption about an API or schema | Architectural preferences/patterns |
 | Race condition or state management bug | Performance suggestions without evidence |
 | Forgotten dependency or import | Additional logging/monitoring |
+| Duplicate findings from sub-agents | Repeated issues already covered |
 
 ### Step 7: Present Findings to the User
 
@@ -233,50 +398,73 @@ Present the filtered results in this format:
 
 ---
 
-**Codex Plan Review — Blind Spot Report**
+**Codex Plan Review — Multi-Agent Blind Spot Report**
 
+**Mode:** Multi-agent (explorer + architecture reviewer) | *or* Single-shot fallback
 **Model used:** [model name + reasoning effort]
 **Complexity assessed:** [LOW / MEDIUM / HIGH — with brief rationale]
 **Plan reviewed:** [brief description]
+
+**Verdict:** APPROVE | APPROVE_WITH_CHANGES | BLOCK
 
 **Critical Findings** (integrate these before executing):
 1. [Finding] — [Why it matters and what to change] — *Evidence: `file:line`*
 2. [Finding] — [Why it matters and what to change] — *Evidence: `file:line`*
 
-**Noted but Non-Critical** (awareness only, no action needed):
-- [Brief note if anything was borderline worth knowing]
+**Medium Risks** (awareness, may need action):
+- [Risk] — [Context]
 
-**Verdict:** [Plan is solid / Plan needs adjustments before executing]
+**Missing Steps** (add to plan before executing):
+- [Step] — [Why needed]
+
+**Noted but Non-Critical** (filtered out, awareness only):
+- [Brief note if anything was borderline worth knowing]
 
 ---
 
-If Codex found nothing critical, say so clearly: "Codex review came back clean — no critical blind spots detected. Plan is good to execute."
+If Codex found nothing critical, say so clearly: "Codex multi-agent review came back clean — no critical blind spots detected. Both explorer and architecture sub-agents validated the plan. Good to execute."
 
 ### Step 8: Integrate and Proceed
 
-If there were critical findings:
+If there were critical findings or a BLOCK verdict:
 1. Update the plan to address each critical finding
 2. Show the user what changed and why
 3. Ask if they want to re-review the updated plan or proceed
 
-If the plan was clean:
+If the verdict was APPROVE or APPROVE_WITH_CHANGES with no critical findings:
 1. Proceed directly to execution
-2. Note in the plan that it was cross-checked
+2. Note in the plan that it was cross-checked via multi-agent review
 
 ## Edge Cases
 
 **Codex is unavailable or errors out:**
 - Preflight check (Step 0) catches installation and version issues early
 - If `codex exec` fails with an auth error, tell the user to run `codex login` or set `OPENAI_API_KEY`
-- If it errors for other reasons, show the error and ask if the user wants to proceed without review
+- If multi-agent mode fails, the skill automatically falls back to single-shot review
+- If both modes fail, show the error and ask if the user wants to proceed without review
+
+**Multi-agent not available:**
+- If Codex version is below 0.104.0 or `multi_agent` feature is not enabled, the fallback runs automatically
+- The single-shot fallback uses a separate prompt without multi-agent instructions (avoids impossible "spawn sub-agents" directives)
+- Report to user: "Ran in single-shot fallback mode — multi_agent was unavailable"
 
 **Codex takes too long:**
-- The Bash tool timeout (300000ms / 5 minutes) will kill the process
+- The Bash tool timeout (600000ms / 10 minutes) will kill the process — multi-agent reviews need more time than single-shot
+- Individual sub-agents are bounded by `job_max_runtime_seconds` (configurable per complexity tier)
 - If it times out, report it and clean up: `rm -f /tmp/codex-plan-*.md /tmp/codex-request-*.md /tmp/codex-output-*.md`
 
 **Codex returns only non-critical noise:**
-- This is fine and expected. Report: "Codex review complete — no critical issues found. All suggestions were non-critical (security hardening, additional validation) and filtered out."
+- This is fine and expected. Report: "Codex multi-agent review complete — no critical issues found. All suggestions were non-critical (security hardening, additional validation) and filtered out."
+
+**Sub-agent echo / duplicates:**
+- Multi-agent mode can produce duplicate findings from both sub-agents. Always deduplicate in Step 6 before presenting to the user.
 
 **User wants to use a different model:**
 - Always respect explicit user model requests: `codex exec -m [model] ...`
 - Common options: `o3`, `o4-mini`, `gpt-5.3-codex-spark`, `gpt-5.3-codex`
+
+**User wants single-shot mode:**
+- If the user says "skip multi-agent", "single shot", or "no sub-agents", remove the `--enable multi_agent` flag and agent config overrides from the `codex exec` call. The rest of the workflow remains the same.
+
+**Legacy `collab` configuration:**
+- The `multi_agent` feature was previously called `collab`. If you see `[collab]` in a user's `~/.codex/config.toml`, advise them to rename it to `[features]` with `multi_agent = true` to avoid deprecation warnings. The CLI flag is `--enable multi_agent` (not `--enable collab`).
