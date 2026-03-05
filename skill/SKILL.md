@@ -255,7 +255,12 @@ You MUST follow this workflow — do not skip to a single-pass review:
    - Read all files listed under "Key Files to Examine" in the plan.
    - Read all files listed under "Files to Modify" in the plan.
    - Check imports, dependencies, and integration points in each file.
-   - Output ONLY: concrete mismatches between the plan and actual code, missing dependencies, broken imports, incorrect API assumptions, and file-level risks. Include exact file paths and line numbers.
+   - If a "Dependency Impact Graph" section is present below the plan: validate it.
+     Find any downstream consumers or import paths the graph missed. Flag any file
+     in the blast radius that the plan does not account for.
+   - Output ONLY: concrete mismatches between the plan and actual code, missing
+     dependencies, broken imports, incorrect API assumptions, file-level risks,
+     and any blast-radius gaps. Include exact file paths and line numbers.
 
 2) Spawn a second sub-agent for architecture and risk review.
    - Evaluate system boundaries, component coupling, and sequencing.
@@ -330,6 +335,8 @@ cat > "$FALLBACK_FILE" << 'FALLBACK_INSTRUCTIONS_EOF'
 You are reviewing an implementation plan created by another AI assistant (Claude Code). Your job is to find CRITICAL blind spots — things that will cause bugs, data loss, race conditions, breaking changes, or architectural problems.
 
 You have access to the project files in this directory. Prioritize reading files listed under "Key Files to Examine" in the plan, then check other referenced files as needed.
+
+If a "Dependency Impact Graph" section is included, validate it — find any downstream consumers the graph missed and flag blast-radius files the plan doesn't address.
 
 DO NOT suggest:
 - Minor style improvements
