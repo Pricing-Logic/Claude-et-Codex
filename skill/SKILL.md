@@ -117,6 +117,12 @@ The "Key Files to Examine" and "Constraints / Non-Goals" sections are important 
 
 If a `writing-plans` skill is available, use it to produce the plan.
 
+### Step 2.5: Dependency Impact Analysis
+
+Before building the Codex request, trace dependency relationships for files mentioned in the plan. This gives Codex concrete blast-radius topology data instead of inferring it. Non-blocking — any failure skips with an inline note.
+
+The dep-graph code runs inside the Steps 3-5 bash block below, after `$WORK_DIR` and `$PLAN_FILE` are defined and the plan is written. Variables `$DEP_GRAPH_FILE` and `$DEP_GRAPH_AVAILABLE` are initialised at the top of that block and used in injection steps after the plan is appended.
+
 ### Steps 3-5: Build Request, Call Codex (Multi-Agent), Read Output
 
 These steps MUST run as a single bash command because Claude Code runs each command in a separate shell — variables like `$PLAN_FILE` would be lost between steps. Run the entire block below as one command.
@@ -154,11 +160,86 @@ mkdir -p "$WORK_DIR" || { echo "ERROR: Cannot create temp dir $WORK_DIR (read-on
 PLAN_FILE="$WORK_DIR/plan.md"
 REQUEST_FILE="$WORK_DIR/request.md"
 OUTPUT_FILE="$WORK_DIR/output.md"
+DEP_GRAPH_FILE="$WORK_DIR/dep-graph.md"
+DEP_GRAPH_AVAILABLE=false
 
 # --- Write the plan ---
 cat > "$PLAN_FILE" << 'PLAN_EOF'
 [Your assembled plan goes here]
 PLAN_EOF
+
+# --- Step 2.5: Dependency Impact Analysis ---
+# Traces import/consumer relationships for plan files. Non-blocking — failures skip gracefully.
+{
+PROJ_LANG="unknown"
+[ -f "package.json" ] && PROJ_LANG="js"
+[ -f "pyproject.toml" ] && PROJ_LANG="python"
+[ -f "requirements.txt" ] && PROJ_LANG="python"
+[ -f "go.mod" ] && PROJ_LANG="go"
+[ -f "Cargo.toml" ] && PROJ_LANG="rust"
+
+# || true: prevents set -e from triggering when last [ -f ] returns false
+PLAN_FILES_DEP=$(grep -oE '[a-zA-Z0-9/_.-]+\.(ts|tsx|js|jsx|py|go|rs|rb|java)' "$PLAN_FILE" 2>/dev/null \
+  | sort -u | while IFS= read -r f; do [ -f "$f" ] && echo "$f"; done || true)
+
+if [ -z "$PLAN_FILES_DEP" ]; then
+  echo "Step 2.5: No code file paths found in plan — skipping dependency analysis."
+else
+  DEP_GRAPH_AVAILABLE=true
+  printf "## Dependency Impact Graph\n\n" > "$DEP_GRAPH_FILE"
+  TOTAL_DOWNSTREAM=0
+
+  while IFS= read -r FILE; do
+    [ -z "$FILE" ] && continue
+    printf "### %s\n" "$FILE" >> "$DEP_GRAPH_FILE"
+
+    OUTGOING=""
+    if [ "$PROJ_LANG" = "js" ] && command -v madge >/dev/null 2>&1; then
+      OUTGOING=$(madge --json "$FILE" 2>/dev/null | grep -oE '"[./][^"]*"' | tr -d '"' | tr '\n' ',' | sed 's/,$//' || true)
+    fi
+    if [ -z "$OUTGOING" ]; then
+      OUTGOING=$(grep -E "from '|require\(" "$FILE" 2>/dev/null | grep -oE "'[./][^']+'" | tr -d "'" | tr '\n' ',' | sed 's/,$//' || true)
+    fi
+    printf "Outgoing: %s\n" "${OUTGOING:-(none)}" >> "$DEP_GRAPH_FILE"
+
+    BASENAME=$(basename "$FILE" | sed 's/\.[^.]*$//')
+    DIRECT=$(grep -rl "$BASENAME" --include="*.ts" --include="*.tsx" --include="*.js" \
+      --include="*.jsx" --include="*.py" --include="*.go" --include="*.rs" . 2>/dev/null \
+      | grep -v "\.codex-tmp" | grep -v "\.git" | sort | head -20 || true)
+    DIRECT_LIST=$(echo "$DIRECT" | tr '\n' ',' | sed 's/,$//' | sed 's/^,//')
+    # grep -c outputs "0" on no match and exits 1 — use || true, NOT || echo 0 (avoids double output)
+    DIRECT_COUNT=$(echo "$DIRECT" | grep -c '[^[:space:]]' 2>/dev/null || true)
+    printf "Incoming (direct): %s\n" "${DIRECT_LIST:-(none)}" >> "$DEP_GRAPH_FILE"
+
+    SECOND_ORDER_ALL=""
+    while IFS= read -r CONSUMER; do
+      [ -z "$CONSUMER" ] && continue
+      CON_BASE=$(basename "$CONSUMER" | sed 's/\.[^.]*$//')
+      SECOND=$(grep -rl "$CON_BASE" --include="*.ts" --include="*.tsx" --include="*.js" \
+        --include="*.jsx" --include="*.py" --include="*.go" --include="*.rs" . 2>/dev/null \
+        | grep -v "\.codex-tmp" | grep -v "\.git" | sort || true)
+      SECOND_ORDER_ALL=$(printf "%s\n%s" "$SECOND_ORDER_ALL" "$SECOND")
+    done <<< "$DIRECT"
+
+    SECOND_UNIQUE=$(echo "$SECOND_ORDER_ALL" | sort -u | grep '[^[:space:]]' || true)
+    SECOND_COUNT=$(echo "$SECOND_UNIQUE" | grep -c '[^[:space:]]' 2>/dev/null || true)
+    SECOND_TOP=$(echo "$SECOND_UNIQUE" | head -10 | tr '\n' ',' | sed 's/,$//')
+
+    if [ "$SECOND_COUNT" -gt 10 ]; then
+      REMAINDER=$((SECOND_COUNT - 10))
+      printf "Incoming (2nd-order): %s ...and %d more (%d total)\n" "$SECOND_TOP" "$REMAINDER" "$SECOND_COUNT" >> "$DEP_GRAPH_FILE"
+    else
+      printf "Incoming (2nd-order): %s\n" "${SECOND_TOP:-(none)}" >> "$DEP_GRAPH_FILE"
+    fi
+
+    TOTAL_DOWNSTREAM=$((TOTAL_DOWNSTREAM + DIRECT_COUNT + SECOND_COUNT))
+    printf "\n" >> "$DEP_GRAPH_FILE"
+  done <<< "$PLAN_FILES_DEP"
+
+  printf "Blast radius: %d files downstream of plan changes\n" "$TOTAL_DOWNSTREAM" >> "$DEP_GRAPH_FILE"
+  echo "Step 2.5: Dependency analysis complete. $(grep 'Blast radius' "$DEP_GRAPH_FILE" || true)"
+fi
+} || echo "Step 2.5: Dependency analysis failed — continuing without graph."
 
 # --- Build combined request (multi-agent instructions + plan in one file) ---
 cat > "$REQUEST_FILE" << 'INSTRUCTIONS_EOF'
@@ -237,6 +318,12 @@ The plan to review follows below.
 INSTRUCTIONS_EOF
 cat "$PLAN_FILE" >> "$REQUEST_FILE"
 
+# --- Inject dependency graph into request (if computed) ---
+if [ "$DEP_GRAPH_AVAILABLE" = "true" ] && [ -s "$DEP_GRAPH_FILE" ]; then
+  printf "\n---\n\n" >> "$REQUEST_FILE"
+  cat "$DEP_GRAPH_FILE" >> "$REQUEST_FILE"
+fi
+
 # --- Build single-shot fallback prompt (strips multi-agent instructions) ---
 FALLBACK_FILE="$WORK_DIR/fallback.md"
 cat > "$FALLBACK_FILE" << 'FALLBACK_INSTRUCTIONS_EOF'
@@ -291,6 +378,12 @@ The plan to review follows below.
 
 FALLBACK_INSTRUCTIONS_EOF
 cat "$PLAN_FILE" >> "$FALLBACK_FILE"
+
+# --- Inject dependency graph into fallback request (if computed) ---
+if [ "$DEP_GRAPH_AVAILABLE" = "true" ] && [ -s "$DEP_GRAPH_FILE" ]; then
+  printf "\n---\n\n" >> "$FALLBACK_FILE"
+  cat "$DEP_GRAPH_FILE" >> "$FALLBACK_FILE"
+fi
 
 # --- Call Codex with multi-agent enabled (adjust model flags per Step 1) ---
 # NOTE: Do NOT use --full-auto — it overrides --sandbox read-only with workspace-write.
