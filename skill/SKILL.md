@@ -512,6 +512,12 @@ Present the filtered results in this format:
 
 **Verdict:** APPROVE | APPROVE_WITH_CHANGES | BLOCK
 
+**Blast Radius** *(omit this section entirely if Step 2.5 was skipped — no empty section, no "not available" note)*:
+- Traced: [files from plan that were analysed]
+- Direct consumers: [files that import plan files]
+- 2nd-order: [up to 10 with "...and N more (X total)" if > 10]
+- Gaps flagged by Codex: [blast-radius files the plan doesn't account for, per explorer sub-agent]
+
 **Critical Findings** (integrate these before executing):
 1. [Finding] — [Why it matters and what to change] — *Evidence: `file:line`*
 2. [Finding] — [Why it matters and what to change] — *Evidence: `file:line`*
