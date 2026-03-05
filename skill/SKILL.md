@@ -203,12 +203,15 @@ else
     printf "Outgoing: %s\n" "${OUTGOING:-(none)}" >> "$DEP_GRAPH_FILE"
 
     BASENAME=$(basename "$FILE" | sed 's/\.[^.]*$//')
-    DIRECT=$(grep -rl "$BASENAME" --include="*.ts" --include="*.tsx" --include="*.js" \
-      --include="*.jsx" --include="*.py" --include="*.go" --include="*.rs" . 2>/dev/null \
-      | grep -v "\.codex-tmp" | grep -v "\.git" | sort | head -20 || true)
+    # Compute full list first (for accurate count), then cap display to 20
+    DIRECT_ALL=$(grep -rl "$BASENAME" --include="*.ts" --include="*.tsx" --include="*.js" \
+      --include="*.jsx" --include="*.py" --include="*.go" --include="*.rs" \
+      --include="*.rb" --include="*.java" . 2>/dev/null \
+      | grep -v "\.codex-tmp" | grep -v "\.git" | sort || true)
+    DIRECT=$(echo "$DIRECT_ALL" | head -20)
     DIRECT_LIST=$(echo "$DIRECT" | tr '\n' ',' | sed 's/,$//' | sed 's/^,//')
-    # grep -c outputs "0" on no match and exits 1 — use || true, NOT || echo 0 (avoids double output)
-    DIRECT_COUNT=$(echo "$DIRECT" | grep -c '[^[:space:]]' 2>/dev/null || true)
+    # Count from uncapped list — avoids undercounting blast radius when >20 direct consumers
+    DIRECT_COUNT=$(echo "$DIRECT_ALL" | grep -c '[^[:space:]]' 2>/dev/null || true)
     printf "Incoming (direct): %s\n" "${DIRECT_LIST:-(none)}" >> "$DEP_GRAPH_FILE"
 
     SECOND_ORDER_ALL=""
@@ -216,7 +219,8 @@ else
       [ -z "$CONSUMER" ] && continue
       CON_BASE=$(basename "$CONSUMER" | sed 's/\.[^.]*$//')
       SECOND=$(grep -rl "$CON_BASE" --include="*.ts" --include="*.tsx" --include="*.js" \
-        --include="*.jsx" --include="*.py" --include="*.go" --include="*.rs" . 2>/dev/null \
+        --include="*.jsx" --include="*.py" --include="*.go" --include="*.rs" \
+        --include="*.rb" --include="*.java" . 2>/dev/null \
         | grep -v "\.codex-tmp" | grep -v "\.git" | sort || true)
       SECOND_ORDER_ALL=$(printf "%s\n%s" "$SECOND_ORDER_ALL" "$SECOND")
     done <<< "$DIRECT"
