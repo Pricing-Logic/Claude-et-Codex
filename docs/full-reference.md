@@ -268,6 +268,17 @@ The skill overrides the model and reasoning effort per-review based on plan comp
 
 ## Changelog
 
+### v2.1.0 (2026-03-05)
+
+**Added: Dependency-Impact Graph Analysis**
+- **Step 2.5** — New pre-Codex step traces import/consumer relationships for all code files mentioned in the plan. Produces a blast-radius summary injected into the Codex request as additional context.
+- **Tool-aware with fallback** — Uses `madge` for JS/TS if installed, grep-based import extraction as universal fallback. Always graceful — any failure skips with an inline note and continues the review.
+- **Targeted transitive depth** — Outgoing deps (1 level) + incoming direct consumers (1 level) + incoming 2nd-order consumers (1 level). Direct consumers capped at 20 for display; 2nd-order capped at 10 with "...and N more (X total)" if > 10. Counts are computed from the full uncapped set for accuracy.
+- **Explorer instruction updated** — Explorer sub-agent now validates the dep graph and flags blast-radius files the plan doesn't account for.
+- **Blast Radius section** — Step 7 output now includes a Blast Radius section showing traced files, direct consumers, 2nd-order consumers, and any gaps Codex flagged. Omitted silently if dep-graph was skipped.
+- **Language detection** — Detects JS/TS (package.json), Python (pyproject.toml/requirements.txt), Go (go.mod), Rust (Cargo.toml) from project root marker files.
+- **Extension coverage** — Extraction and consumer scans cover: ts, tsx, js, jsx, py, go, rs, rb, java.
+
 ### v2.0.1 (2026-03-04)
 
 **Fixed:**

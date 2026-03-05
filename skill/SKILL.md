@@ -1,6 +1,6 @@
 ---
 name: codex-plan-review
-version: 2.0.0
+version: 2.1.0
 description: "Cross-check implementation plans against Codex CLI using multi-agent review to catch blind spots before coding. Use this skill BEFORE executing any implementation plan — when you've drafted a plan for a new feature, a refactor, a bug fix, or any multi-file change. Also use when the user says things like 'plan review', 'check with codex', 'second opinion', 'blind spot check', 'review my plan', or 'cross-check this'. The whole point is to get a second AI perspective on architectural decisions and catch things Claude Code might miss, then filter the feedback to only what actually matters. v2.0 uses Codex's multi_agent feature to spawn parallel sub-agents for deeper code-reality validation and architecture review."
 ---
 
@@ -8,7 +8,7 @@ description: "Cross-check implementation plans against Codex CLI using multi-age
 
 You have a plan (or are about to finalize one). Before executing it, you're going to get a second opinion from OpenAI's Codex CLI to catch blind spots. Codex thinks differently than you do — it'll spot things you miss. But it also tends to over-engineer security and add unnecessary complexity. Your job is to be a smart filter: extract the critical insights, discard the noise.
 
-**v2.0** uses Codex's `multi_agent` feature to spawn parallel sub-agents — an **explorer** that reads actual repo files to validate feasibility, and an **architecture reviewer** that evaluates design, sequencing, and risk — then synthesizes both into a single verdict. This produces significantly deeper reviews than single-shot mode.
+**v2.1** adds dependency-impact graph analysis (Step 2.5) — before calling Codex, the skill traces blast-radius topology for plan files and injects it into the Codex request. Uses Codex's `multi_agent` feature to spawn parallel sub-agents — an **explorer** that validates code reality and the dep graph, and an **architecture reviewer** that evaluates design, sequencing, and risk — then synthesizes both into a single verdict.
 
 **Requirements:** Codex CLI >= 0.104.0 (`codex -V` to check). Install with `npm install -g @openai/codex` if missing. The `multi_agent` feature must be available (experimental as of March 2026).
 
