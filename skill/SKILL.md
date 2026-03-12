@@ -71,13 +71,13 @@ Before calling Codex, assess the plan's complexity to determine model, reasoning
 |------------|-------|-----------|-------------|-----------|-------------|
 | LOW | spark | medium | 2 | 1 | 600 |
 | MEDIUM | codex-5.3 | high | 3 | 1 | 900 |
-| HIGH | codex-5.3 | xhigh | 4 | 1 | 1200 |
+| HIGH | codex-5.4 (fallback: codex-5.3) | xhigh | 4 | 1 | 1200 |
 
-Rationale: Spark handles simple checklist-style reviews well. Codex-5.3 reasons more carefully about architecture and edge cases — use it for anything beyond trivial changes. `max_depth=1` prevents recursive sub-agent spawning (a safety guard). Thread count scales with complexity because higher-complexity plans benefit from more parallel exploration.
+Rationale: Spark handles simple checklist-style reviews well. Codex-5.3 reasons more carefully about architecture and edge cases — use it for anything beyond trivial changes. Codex-5.4 (`gpt-5.4-codex`) is the strongest model for HIGH-complexity reviews when available, but it is not yet supported on all account types — the skill automatically falls back to `gpt-5.3-codex` if the model is unavailable (see model availability check below). `max_depth=1` prevents recursive sub-agent spawning (a safety guard). Thread count scales with complexity because higher-complexity plans benefit from more parallel exploration.
 
 **Auto-escalation triggers:** If a LOW plan touches any of these, auto-upgrade to MEDIUM routing: auth/permissions, schema/data contracts, migrations, background jobs, concurrency, external API contracts, or unclear ownership boundaries.
 
-**Note:** Model names evolve. If `gpt-5.3-codex-spark` or `gpt-5.3-codex` are no longer available, check `codex` docs for current model IDs and substitute accordingly.
+**Note:** Model names evolve. If `gpt-5.3-codex-spark` or `gpt-5.3-codex` are no longer available, check `codex` docs for current model IDs and substitute accordingly. You can run `codex models list` to see which models are available on your account.
 
 If the user explicitly requests a model or reasoning effort (e.g., "use o3", "use spark", "xhigh thinking", "high reasoning"), always respect that over the auto-selection. Valid reasoning effort values: `low`, `medium`, `high`, `xhigh`.
 
@@ -141,8 +141,9 @@ Choose the configuration based on your Step 1 assessment:
 
 **HIGH complexity:**
 ```
--m gpt-5.3-codex -c model_reasoning_effort="xhigh" -c agents.max_threads=4 -c agents.max_depth=1 -c agents.job_max_runtime_seconds=1200
+-m gpt-5.4-codex -c model_reasoning_effort="xhigh" -c agents.max_threads=4 -c agents.max_depth=1 -c agents.job_max_runtime_seconds=1200
 ```
+*(If `gpt-5.4-codex` is unavailable, fall back to `-m gpt-5.3-codex` — see model availability check in the bash block below.)*
 
 ```bash
 # --- Ensure npm/node global bins are on PATH ---
@@ -162,6 +163,29 @@ REQUEST_FILE="$WORK_DIR/request.md"
 OUTPUT_FILE="$WORK_DIR/output.md"
 DEP_GRAPH_FILE="$WORK_DIR/dep-graph.md"
 DEP_GRAPH_AVAILABLE=false
+
+# --- Model availability check ---
+# For HIGH complexity, test if gpt-5.4-codex is available before committing to it.
+# ChatGPT accounts may not have access; fall back to gpt-5.3-codex if so.
+# Replace SELECTED_MODEL below with the model chosen in Step 1.
+SELECTED_MODEL="gpt-5.3-codex"  # default; override to gpt-5.4-codex for HIGH complexity
+# Uncomment the next line for HIGH complexity:
+# SELECTED_MODEL="gpt-5.4-codex"
+if [ "$SELECTED_MODEL" = "gpt-5.4-codex" ]; then
+  echo "Testing model availability: $SELECTED_MODEL ..."
+  MODEL_TEST=$(echo "Reply with OK" | codex exec --ephemeral -m "$SELECTED_MODEL" - 2>&1)
+  MODEL_TEST_EXIT=$?
+  if [ $MODEL_TEST_EXIT -ne 0 ] && echo "$MODEL_TEST" | grep -qE "(not supported|invalid.*model|400)"; then
+    echo "WARNING: $SELECTED_MODEL is not available on this account (got: model not supported). Falling back to gpt-5.3-codex."
+    SELECTED_MODEL="gpt-5.3-codex"
+  elif [ $MODEL_TEST_EXIT -ne 0 ]; then
+    echo "WARNING: Model test for $SELECTED_MODEL failed (exit $MODEL_TEST_EXIT). Falling back to gpt-5.3-codex."
+    echo "Test output: $MODEL_TEST"
+    SELECTED_MODEL="gpt-5.3-codex"
+  else
+    echo "Model $SELECTED_MODEL is available."
+  fi
+fi
 
 # --- Write the plan ---
 cat > "$PLAN_FILE" << 'PLAN_EOF'
@@ -399,11 +423,13 @@ fi
 # --- Call Codex with multi-agent enabled (adjust model flags per Step 1) ---
 # NOTE: Do NOT use --full-auto — it overrides --sandbox read-only with workspace-write.
 # In exec mode, approval defaults to 'never', so --full-auto is unnecessary.
+# $SELECTED_MODEL is set by the availability check above (gpt-5.4-codex or gpt-5.3-codex for HIGH,
+# gpt-5.3-codex for MEDIUM, gpt-5.3-codex-spark for LOW). Adjust reasoning/threads per Step 1.
 cat "$REQUEST_FILE" | codex exec \
   --ephemeral \
   --enable multi_agent \
   --sandbox read-only \
-  -m gpt-5.3-codex \
+  -m "$SELECTED_MODEL" \
   -c model_reasoning_effort="high" \
   -c agents.max_threads=3 \
   -c agents.max_depth=1 \
@@ -428,7 +454,7 @@ if [ $CODEX_EXIT -ne 0 ]; then
     --full-auto \
     --ephemeral \
     --sandbox read-only \
-    -m gpt-5.3-codex \
+    -m "$SELECTED_MODEL" \
     -c model_reasoning_effort="high" \
     -C "$(pwd)" \
     -o "$OUTPUT_FILE" \
@@ -576,7 +602,9 @@ If the verdict was APPROVE or APPROVE_WITH_CHANGES with no critical findings:
 
 **User wants to use a different model:**
 - Always respect explicit user model requests: `codex exec -m [model] ...`
-- Common options: `o3`, `o4-mini`, `gpt-5.3-codex-spark`, `gpt-5.3-codex`
+- Common options: `o3`, `o4-mini`, `gpt-5.3-codex-spark`, `gpt-5.3-codex`, `gpt-5.4-codex`
+- Model availability varies by account type (ChatGPT vs API). Some models (e.g., `gpt-5.4-codex`) may not be available on ChatGPT accounts. The skill's model availability check will automatically detect this and fall back to `gpt-5.3-codex` with a warning.
+- To check which models your account can access, run `codex models list` (or `codex models` depending on CLI version)
 
 **User wants single-shot mode:**
 - If the user says "skip multi-agent", "single shot", or "no sub-agents", remove the `--enable multi_agent` flag and agent config overrides from the `codex exec` call. The rest of the workflow remains the same.
